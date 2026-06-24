@@ -301,7 +301,7 @@ fun CameraPreviewContainer() {
                         android.graphics.PointF(screenX, screenY)
                     }
 
-                    val hairColor = Color(0xFF1E1E1E) // Cor do cabelo (preto carvão)
+                    val hairColor = Color(0xFF1E1E1E) // Cor do cabelo (preto)
                     val beardColor = Color(0xFF2E241E) // Cor da barba (castanho escuro)
 
                     // Direção vertical do rosto (vetor do queixo à testa)
@@ -447,8 +447,8 @@ fun CameraPreviewContainer() {
                     }
 
                     if (hairBitmap != null) {
-                        val pLeft = points[234]
-                        val pRight = points[454]
+                        val pLeft = points[454]
+                        val pRight = points[234]
                         val dx = pRight.x - pLeft.x
                         val dy = pRight.y - pLeft.y
 
