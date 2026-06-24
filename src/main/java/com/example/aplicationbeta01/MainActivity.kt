@@ -127,6 +127,12 @@ fun CameraPreviewContainer() {
     val amostra02 = remember(context) {
         BitmapFactory.decodeResource(context.resources, R.drawable.amostra02).asImageBitmap()
     }
+    val corte002 = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.corte_cabelo_masculino_002).asImageBitmap()
+    }
+    val corte003 = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.corte_cabelo_masculino_003).asImageBitmap()
+    }
     
     // Dimensões do frame para mapeamento de coordenadas
     var frameWidth by remember { mutableStateOf(1) }
@@ -431,10 +437,12 @@ fun CameraPreviewContainer() {
                         drawPath(path = path, color = hairColor, style = Fill)
                     }
 
-                    // Desenho de Imagens de Amostra (Amostra 1 e Amostra 2)
+                    // Desenho de Imagens de Amostra (Amostras de cabelo)
                     val hairBitmap = when (selectedHairStyle) {
                         HairStyle.AM_01 -> amostra01
                         HairStyle.AM_02 -> amostra02
+                        HairStyle.CORTE_002 -> corte002
+                        HairStyle.CORTE_003 -> corte003
                         else -> null
                     }
 
@@ -450,8 +458,8 @@ fun CameraPreviewContainer() {
                         // Distância horizontal entre as bochechas
                         val faceWidth = kotlin.math.sqrt(dx * dx + dy * dy)
 
-                        // Fator de escala do cabelo (1.4f é excelente para abranger as laterais e o topo da cabeça)
-                        val hairScaleMultiplier = 1.4f
+                        // Fator de escala do cabelo (customizável por estilo)
+                        val hairScaleMultiplier = selectedHairStyle.hairScaleMultiplier
                         val hairWidth = faceWidth * hairScaleMultiplier
                         val hairHeight = hairWidth * (hairBitmap.height.toFloat() / hairBitmap.width.toFloat())
 
@@ -460,9 +468,9 @@ fun CameraPreviewContainer() {
 
                         // Aplicamos a rotação na DrawScope
                         rotate(degrees = angle, pivot = Offset(pivotPoint.x, pivotPoint.y)) {
-                            // Ajuste vertical (cerca de 18% da altura da imagem) para que a linha do cabelo
+                            // Ajuste vertical (customizável por estilo) para que a linha do cabelo
                             // das amostras se sobreponha de forma suave e natural sobre a testa.
-                            val verticalAdjustment = hairHeight * 0.18f
+                            val verticalAdjustment = hairHeight * selectedHairStyle.verticalAdjustmentFactor
                             val left = pivotPoint.x - (hairWidth / 2f)
                             val top = pivotPoint.y - hairHeight + verticalAdjustment
 
@@ -605,13 +613,20 @@ fun setupFaceLandmarker(
         }
 }
 
-enum class HairStyle(val label: String, val drawableRes: Int? = null) {
+enum class HairStyle(
+    val label: String,
+    val drawableRes: Int? = null,
+    val hairScaleMultiplier: Float = 1.4f,
+    val verticalAdjustmentFactor: Float = 0.18f
+) {
     NONE("Nenhum"),
     MOHAWK("Moicano"),
     FRINGE("Franja"),
     BUZZCUT("Militar"),
     AM_01("Social (Amostra 1)", R.drawable.amostra01),
-    AM_02("Moderno (Amostra 2)", R.drawable.amostra02)
+    AM_02("Moderno (Amostra 2)", R.drawable.amostra02),
+    CORTE_002("Cabelo Masculino 2", R.drawable.corte_cabelo_masculino_002, 1.4f, 0.18f),
+    CORTE_003("Cabelo Masculino 3", R.drawable.corte_cabelo_masculino_003, 1.4f, 0.18f)
 }
 
 enum class BeardStyle(val label: String) {
