@@ -1,6 +1,7 @@
 package com.example.aplicationbeta01
 
 import android.Manifest
+import android.content.Context
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -8,6 +9,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.OptIn
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
@@ -15,11 +17,21 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -27,13 +39,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import android.graphics.Bitmap
+import kotlin.math.max
+import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
-import com.google.mediapipe.framework.image.MediaImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -55,6 +75,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalGetImage::class)
 @Composable
 fun CameraScreen() {
     val context = LocalContext.current
@@ -94,6 +115,24 @@ fun CameraPreviewContainer() {
     var statusText by remember { mutableStateOf("Inicializando FaceLandmarker...") }
     var landmarkerError by remember { mutableStateOf<String?>(null) }
 
+    // Estados da simulação de cabelo e barba
+    var currentLandmarksResult by remember { mutableStateOf<FaceLandmarkerResult?>(null) }
+    var selectedHairStyle by remember { mutableStateOf(HairStyle.NONE) }
+    var selectedBeardStyle by remember { mutableStateOf(BeardStyle.NONE) }
+    
+    // Carregar as amostras de imagem como ImageBitmap (com cache em remember para performance)
+    val amostra01 = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.amostra01).asImageBitmap()
+    }
+    val amostra02 = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.amostra02).asImageBitmap()
+    }
+    
+    // Dimensões do frame para mapeamento de coordenadas
+    var frameWidth by remember { mutableStateOf(1) }
+    var frameHeight by remember { mutableStateOf(1) }
+    var frameRotation by remember { mutableStateOf(0) }
+
     // Criamos o executor de segundo plano para processar as imagens
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
@@ -109,6 +148,7 @@ fun CameraPreviewContainer() {
                     } else {
                         "Status: Nenhum rosto detectado"
                     }
+                    currentLandmarksResult = result
                 },
                 onError = { error ->
                     Log.e("FaceLandmarker", "Erro no listener do FaceLandmarker: ${error.message}")
@@ -162,31 +202,46 @@ fun CameraPreviewContainer() {
                         // Configura o analisador de imagem do CameraX
                         val imageAnalyzer = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                             .build()
                             .also { analyzer ->
                                 analyzer.setAnalyzer(analysisExecutor) { imageProxy ->
-                                    val mediaImage = imageProxy.image
-                                    if (mediaImage != null && faceLandmarker != null) {
+                                    if (faceLandmarker != null) {
                                         try {
-                                            // 1. Converte o frame da câmera (ImageProxy/Image) em MPImage
-                                            val mpImage = MediaImageBuilder(mediaImage).build()
+                                            // 1. Criamos um bitmap buffer com as dimensões do frame
+                                            val bitmapBuffer = Bitmap.createBitmap(
+                                                imageProxy.width,
+                                                imageProxy.height,
+                                                Bitmap.Config.ARGB_8888
+                                            )
+                                            // 2. Copiamos os pixels do buffer do ImageProxy para o bitmap
+                                            bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer)
 
-                                            // 2. Define a rotação correta baseada nas informações do frame do CameraX
+                                            // 3. Converte o frame em MPImage
+                                            val mpImage = BitmapImageBuilder(bitmapBuffer).build()
+
+                                            // 4. Define a rotação correta baseada nas informações do frame do CameraX
                                             val rotationDegrees = imageProxy.imageInfo.rotationDegrees
+                                            
+                                            // Atualiza as dimensões e rotação do frame para o Canvas
+                                            frameWidth = imageProxy.width
+                                            frameHeight = imageProxy.height
+                                            frameRotation = rotationDegrees
+                                            
                                             val imageProcessingOptions = ImageProcessingOptions.builder()
                                                 .setRotationDegrees(rotationDegrees)
                                                 .build()
 
-                                            // 3. Obtém o timestamp atual (monotonicamente crescente em milissegundos)
+                                            // 5. Obtém o timestamp atual (monotonicamente crescente em milissegundos)
                                             val timestampMs = SystemClock.uptimeMillis()
 
-                                            // 4. Envia o frame assincronamente para detecção de landmarks faciais
+                                            // 6. Envia o frame assincronamente para detecção de landmarks faciais
                                             faceLandmarker.detectAsync(mpImage, imageProcessingOptions, timestampMs)
                                         } catch (e: Exception) {
                                             Log.e("FaceLandmarker", "Erro ao processar frame: ${e.message}", e)
                                         }
                                     }
-                                    // 5. IMPORTANTE: Fecha o ImageProxy para liberar o buffer e continuar recebendo frames
+                                    // 7. IMPORTANTE: Fecha o ImageProxy para liberar o buffer e continuar recebendo frames
                                     imageProxy.close()
                                 }
                             }
@@ -212,27 +267,309 @@ fun CameraPreviewContainer() {
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Painel moderno sobreposto (overlay) com status da detecção e visual limpo (Glassmorphism/Sleek design)
+            // Canvas de desenho por cima da visualização da câmera
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val canvasWidth = size.width
+                val canvasHeight = size.height
+
+                val currentResult = currentLandmarksResult
+                if (currentResult != null && currentResult.faceLandmarks().isNotEmpty() && frameWidth > 1 && frameHeight > 1) {
+                    val landmarks = currentResult.faceLandmarks()[0]
+
+                    // 1. Calcula as dimensões rotacionadas baseadas na rotação do frame
+                    val rotatedWidth = if (frameRotation == 90 || frameRotation == 270) frameHeight else frameWidth
+                    val rotatedHeight = if (frameRotation == 90 || frameRotation == 270) frameWidth else frameHeight
+
+                    val scaleX = canvasWidth / rotatedWidth.toFloat()
+                    val scaleY = canvasHeight / rotatedHeight.toFloat()
+                    val scale = max(scaleX, scaleY)
+
+                    val offsetX = (canvasWidth - rotatedWidth * scale) / 2f
+                    val offsetY = (canvasHeight - rotatedHeight * scale) / 2f
+
+                    // 2. Mapeia todos os pontos normalizados para pixels da tela (com espelhamento da câmera frontal)
+                    val points = landmarks.map { landmark ->
+                        val correctedX = 1f - landmark.x() // Espelhamento horizontal para câmera frontal
+                        val screenX = correctedX * rotatedWidth * scale + offsetX
+                        val screenY = landmark.y() * rotatedHeight * scale + offsetY
+                        android.graphics.PointF(screenX, screenY)
+                    }
+
+                    val hairColor = Color(0xFF1E1E1E) // Cor do cabelo (preto carvão)
+                    val beardColor = Color(0xFF2E241E) // Cor da barba (castanho escuro)
+
+                    // Direção vertical do rosto (vetor do queixo à testa)
+                    val vX = points[10].x - points[152].x
+                    val vY = points[10].y - points[152].y
+
+                    // --- DESENHO DE BARBA E CAVANHAQUE ---
+
+                    // Bigode (Mustache)
+                    if (selectedBeardStyle == BeardStyle.MUSTACHE || selectedBeardStyle == BeardStyle.FULL) {
+                        val path = Path().apply {
+                            val noseBase = points[164]
+                            val leftCorner = points[61]
+                            val rightCorner = points[291]
+                            val lipCenter = points[0]
+                            moveTo(leftCorner.x, leftCorner.y)
+                            quadraticTo(points[37].x, points[37].y - (points[164].y - points[0].y) * 0.4f, noseBase.x, noseBase.y)
+                            quadraticTo(points[267].x, points[267].y - (points[164].y - points[0].y) * 0.4f, rightCorner.x, rightCorner.y)
+                            quadraticTo(points[308].x, points[308].y + (points[17].y - points[0].y) * 0.1f, lipCenter.x, lipCenter.y)
+                            quadraticTo(points[78].x, points[78].y + (points[17].y - points[0].y) * 0.1f, leftCorner.x, leftCorner.y)
+                            close()
+                        }
+                        drawPath(path = path, color = beardColor, style = Fill)
+                    }
+
+                    // Cavanhaque (Goatee)
+                    if (selectedBeardStyle == BeardStyle.GOATEE) {
+                        val path = Path().apply {
+                            moveTo(points[61].x, points[61].y)
+                            lineTo(points[148].x, points[148].y)
+                            lineTo(points[152].x, points[152].y)
+                            lineTo(points[377].x, points[377].y)
+                            lineTo(points[291].x, points[291].y)
+                            quadraticTo(points[17].x, points[17].y + (points[152].y - points[17].y) * 0.2f, points[61].x, points[61].y)
+                            close()
+                        }
+                        drawPath(path = path, color = beardColor, style = Fill)
+                    }
+
+                    // Barba Cheia (Full Beard)
+                    if (selectedBeardStyle == BeardStyle.FULL) {
+                        val path = Path().apply {
+                            moveTo(points[127].x, points[127].y)
+                            lineTo(points[234].x, points[234].y)
+                            lineTo(points[172].x, points[172].y)
+                            lineTo(points[150].x, points[150].y)
+                            lineTo(points[152].x, points[152].y)
+                            lineTo(points[379].x, points[379].y)
+                            lineTo(points[400].x, points[400].y)
+                            lineTo(points[454].x, points[454].y)
+                            lineTo(points[356].x, points[356].y)
+                            lineTo(points[411].x, points[411].y)
+                            lineTo(points[291].x, points[291].y)
+                            lineTo(points[17].x, points[17].y)
+                            lineTo(points[61].x, points[61].y)
+                            lineTo(points[187].x, points[187].y)
+                            lineTo(points[127].x, points[127].y)
+                            close()
+                        }
+                        drawPath(path = path, color = beardColor, style = Fill)
+                    }
+
+                    // --- DESENHO DE CABELO ---
+
+                    // Buzzcut (Militar)
+                    if (selectedHairStyle == HairStyle.BUZZCUT) {
+                        val path = Path().apply {
+                            val pTopX = points[10].x + vX * 0.22f
+                            val pTopY = points[10].y + vY * 0.22f
+                            val pLeftX = points[109].x + vX * 0.12f
+                            val pLeftY = points[109].y + vY * 0.12f
+                            val pRightX = points[338].x + vX * 0.12f
+                            val pRightY = points[338].y + vY * 0.12f
+
+                            moveTo(points[109].x, points[109].y)
+                            lineTo(pLeftX, pLeftY)
+                            quadraticTo(pTopX, pTopY, pRightX, pRightY)
+                            lineTo(points[338].x, points[338].y)
+                            lineTo(points[10].x, points[10].y)
+                            close()
+                        }
+                        drawPath(path = path, color = hairColor, style = Fill)
+                    }
+
+                    // Mohawk (Moicano)
+                    if (selectedHairStyle == HairStyle.MOHAWK) {
+                        val path = Path().apply {
+                            val pTopX = points[10].x + vX * 0.45f
+                            val pTopY = points[10].y + vY * 0.45f
+
+                            val orthoX = -vY * 0.08f
+                            val orthoY = vX * 0.08f
+
+                            val pLeftBaseX = points[10].x + orthoX
+                            val pLeftBaseY = points[10].y + orthoY
+                            val pRightBaseX = points[10].x - orthoX
+                            val pRightBaseY = points[10].y - orthoY
+
+                            moveTo(pLeftBaseX, pLeftBaseY)
+                            lineTo(points[10].x + vX * 0.15f + orthoX * 0.8f, points[10].y + vY * 0.15f + orthoY * 0.8f)
+                            lineTo(pTopX, pTopY)
+                            lineTo(points[10].x + vX * 0.15f - orthoX * 0.8f, points[10].y + vY * 0.15f - orthoY * 0.8f)
+                            lineTo(pRightBaseX, pRightBaseY)
+                            close()
+                        }
+                        drawPath(path = path, color = hairColor, style = Fill)
+                    }
+
+                    // Fringe (Franja)
+                    if (selectedHairStyle == HairStyle.FRINGE) {
+                        val path = Path().apply {
+                            val pTopX = points[10].x + vX * 0.25f
+                            val pTopY = points[10].y + vY * 0.25f
+                            val pLeftX = points[109].x + vX * 0.15f
+                            val pLeftY = points[109].y + vY * 0.15f
+                            val pRightX = points[338].x + vX * 0.15f
+                            val pRightY = points[338].y + vY * 0.15f
+
+                            val pFringeLeftX = points[70].x
+                            val pFringeLeftY = points[70].y
+                            val pFringeRightX = points[300].x
+                            val pFringeRightY = points[300].y
+
+                            moveTo(points[109].x, points[109].y)
+                            lineTo(pLeftX, pLeftY)
+                            quadraticTo(pTopX, pTopY, pRightX, pRightY)
+                            lineTo(points[338].x, points[338].y)
+                            lineTo(pFringeRightX, pFringeRightY)
+                            lineTo(points[10].x - vX * 0.05f, points[10].y - vY * 0.05f)
+                            lineTo(pFringeLeftX, pFringeLeftY)
+                            close()
+                        }
+                        drawPath(path = path, color = hairColor, style = Fill)
+                    }
+
+                    // Desenho de Imagens de Amostra (Amostra 1 e Amostra 2)
+                    val hairBitmap = when (selectedHairStyle) {
+                        HairStyle.AM_01 -> amostra01
+                        HairStyle.AM_02 -> amostra02
+                        else -> null
+                    }
+
+                    if (hairBitmap != null) {
+                        val pLeft = points[234]
+                        val pRight = points[454]
+                        val dx = pRight.x - pLeft.x
+                        val dy = pRight.y - pLeft.y
+
+                        // Ângulo de inclinação lateral da cabeça
+                        val angle = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
+
+                        // Distância horizontal entre as bochechas
+                        val faceWidth = kotlin.math.sqrt(dx * dx + dy * dy)
+
+                        // Fator de escala do cabelo (1.4f é excelente para abranger as laterais e o topo da cabeça)
+                        val hairScaleMultiplier = 1.4f
+                        val hairWidth = faceWidth * hairScaleMultiplier
+                        val hairHeight = hairWidth * (hairBitmap.height.toFloat() / hairBitmap.width.toFloat())
+
+                        // Ponto de pivot no topo da testa (landmark 10)
+                        val pivotPoint = points[10]
+
+                        // Aplicamos a rotação na DrawScope
+                        rotate(degrees = angle, pivot = Offset(pivotPoint.x, pivotPoint.y)) {
+                            // Ajuste vertical (cerca de 18% da altura da imagem) para que a linha do cabelo
+                            // das amostras se sobreponha de forma suave e natural sobre a testa.
+                            val verticalAdjustment = hairHeight * 0.18f
+                            val left = pivotPoint.x - (hairWidth / 2f)
+                            val top = pivotPoint.y - hairHeight + verticalAdjustment
+
+                            drawImage(
+                                image = hairBitmap,
+                                dstOffset = IntOffset(left.toInt(), top.toInt()),
+                                dstSize = IntSize(hairWidth.toInt(), hairHeight.toInt())
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Painel moderno sobreposto (overlay) com seletores de estilo
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(24.dp),
+                    .padding(16.dp),
                 contentAlignment = Alignment.BottomCenter
             ) {
-                Box(
+                Column(
                     modifier = Modifier
+                        .fillMaxWidth()
                         .background(
-                            color = Color(0x990F172A), // Dark slate semi-transparente
-                            shape = RoundedCornerShape(16.dp)
+                            color = Color(0xD90F172A), // Dark slate semi-transparente
+                            shape = RoundedCornerShape(20.dp)
                         )
-                        .padding(horizontal = 24.dp, vertical = 16.dp)
-                        .wrapContentSize()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    // Status da Detecção
                     Text(
                         text = statusText,
                         color = Color.White,
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(bottom = 12.dp)
                     )
+
+                    // Seletor de Cabelo
+                    Text(
+                        text = "Estilo de Cabelo:",
+                        color = Color(0xFF94A3B8), // Slate 400
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier
+                            .align(Alignment.Start)
+                            .padding(bottom = 6.dp)
+                    )
+
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(HairStyle.values()) { style ->
+                            val isSelected = selectedHairStyle == style
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        color = if (isSelected) Color(0xFF3B82F6) else Color(0xFF1E293B), // Blue 500 ou Slate 800
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { selectedHairStyle = style }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = style.label,
+                                    color = if (isSelected) Color.White else Color(0xFFCBD5E1), // White ou Slate 300
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+
+                    // Seletor de Barba
+                    Text(
+                        text = "Estilo de Barba:",
+                        color = Color(0xFF94A3B8),
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier
+                            .align(Alignment.Start)
+                            .padding(bottom = 6.dp)
+                    )
+
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(BeardStyle.values()) { style ->
+                            val isSelected = selectedBeardStyle == style
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        color = if (isSelected) Color(0xFF10B981) else Color(0xFF1E293B), // Emerald 500 ou Slate 800
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { selectedBeardStyle = style }
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = style.label,
+                                    color = if (isSelected) Color.White else Color(0xFFCBD5E1),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -240,25 +577,46 @@ fun CameraPreviewContainer() {
 }
 
 fun setupFaceLandmarker(
-    context: android.content.Context,
-    onResults: (FaceLandmarkerResult, MPImage) -> Unit,
-    onError: (Throwable) -> Unit
-): FaceLandmarker {
-    val baseOptions = BaseOptions.builder()
-        .setModelAssetPath("face_landmarker.task") // Nome exato do arquivo no assets
-        .build()
+        context: android.content.Context,
+        onResults: (FaceLandmarkerResult, MPImage) -> Unit,
+        onError: (Throwable) -> Unit
+    ): FaceLandmarker {
+        try {
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("face_landmarker.task") // Nome exato do arquivo no assets
+                .build()
 
-    val options = FaceLandmarker.FaceLandmarkerOptions.builder()
-        .setBaseOptions(baseOptions)
-        .setMinFaceDetectionConfidence(0.5f) // Confiança mínima para detectar um rosto
-        .setRunningMode(RunningMode.LIVE_STREAM) // Configura para ler o feed da câmera em tempo real
-        .setResultListener { result, mpImage ->
-            onResults(result, mpImage)
-        }
-        .setErrorListener { error ->
-            onError(error)
-        }
-        .build()
+            val options = FaceLandmarker.FaceLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setMinFaceDetectionConfidence(0.5f)
+                .setRunningMode(RunningMode.LIVE_STREAM)
+                .setResultListener { result, mpImage ->
+                    onResults(result, mpImage)
+                }
+                .setErrorListener { error ->
+                    onError(error)
+                }
+                .build()
 
-    return FaceLandmarker.createFromOptions(context, options)
+            return FaceLandmarker.createFromOptions(context, options)
+        } catch (e: Exception) {
+            Log.e("MediaPipeError", "Falha ao inicializar o FaceLandmarker", e)
+            throw e // Propaga o erro para o tratamento na UI
+        }
+}
+
+enum class HairStyle(val label: String, val drawableRes: Int? = null) {
+    NONE("Nenhum"),
+    MOHAWK("Moicano"),
+    FRINGE("Franja"),
+    BUZZCUT("Militar"),
+    AM_01("Social (Amostra 1)", R.drawable.amostra01),
+    AM_02("Moderno (Amostra 2)", R.drawable.amostra02)
+}
+
+enum class BeardStyle(val label: String) {
+    NONE("Nenhuma"),
+    MUSTACHE("Bigode"),
+    GOATEE("Cavanhaque"),
+    FULL("Barba Cheia")
 }

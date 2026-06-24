@@ -65,4 +65,5 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     // Google MediaPipe Vision
     implementation(libs.mediapipe.vision)
+    implementation("com.google.mediapipe:tasks-vision:0.10.21") // Substitua pela última versão disponível
 }
