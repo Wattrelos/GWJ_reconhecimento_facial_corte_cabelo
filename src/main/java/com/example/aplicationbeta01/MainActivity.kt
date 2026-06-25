@@ -5,6 +5,14 @@ import android.content.Context
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.hardware.display.DisplayManager
+import android.view.View
+import android.view.Surface
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -111,14 +119,17 @@ fun CameraPreviewContainer() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraProviderFuture = remember { ProcessCameraProvider.getInstance(context) }
 
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     // Status para exibição de texto
     var statusText by remember { mutableStateOf("Inicializando FaceLandmarker...") }
     var landmarkerError by remember { mutableStateOf<String?>(null) }
 
     // Estados da simulação de cabelo e barba
     var currentLandmarksResult by remember { mutableStateOf<FaceLandmarkerResult?>(null) }
-    var selectedHairStyle by remember { mutableStateOf(HairStyle.NONE) }
-    var selectedBeardStyle by remember { mutableStateOf(BeardStyle.NONE) }
+    var selectedHairStyle by rememberSaveable { mutableStateOf(HairStyle.NONE) }
+    var selectedBeardStyle by rememberSaveable { mutableStateOf(BeardStyle.NONE) }
     
     // Carregar as amostras de imagem como ImageBitmap (com cache em remember para performance)
     val amostra01 = remember(context) {
@@ -201,14 +212,21 @@ fun CameraPreviewContainer() {
 
                     cameraProviderFuture.addListener({
                         val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
+
+                        // Rotação inicial da tela
+                        val initialRotation = previewView.display?.rotation ?: Surface.ROTATION_0
+
+                        val preview = Preview.Builder()
+                            .setTargetRotation(initialRotation)
+                            .build().also {
+                                it.setSurfaceProvider(previewView.surfaceProvider)
+                            }
 
                         // Configura o analisador de imagem do CameraX
                         val imageAnalyzer = ImageAnalysis.Builder()
                             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                            .setTargetRotation(initialRotation)
                             .build()
                             .also { analyzer ->
                                 analyzer.setAnalyzer(analysisExecutor) { imageProxy ->
@@ -252,6 +270,40 @@ fun CameraPreviewContainer() {
                                 }
                             }
 
+                        // Configura o DisplayListener para atualizar a rotação das use cases quando o smartphone for rotacionado
+                        val displayManager = ctx.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                        val displayListener = object : DisplayManager.DisplayListener {
+                            override fun onDisplayAdded(displayId: Int) {}
+                            override fun onDisplayRemoved(displayId: Int) {}
+                            override fun onDisplayChanged(displayId: Int) {
+                                val viewDisplay = previewView.display
+                                if (viewDisplay != null && displayId == viewDisplay.displayId) {
+                                    val rotation = viewDisplay.rotation
+                                    try {
+                                        preview.targetRotation = rotation
+                                        imageAnalyzer.targetRotation = rotation
+                                    } catch (e: Exception) {
+                                        Log.e("CameraPreview", "Erro ao atualizar rotação: ${e.message}")
+                                    }
+                                }
+                            }
+                        }
+
+                        val attachListener = object : View.OnAttachStateChangeListener {
+                            override fun onViewAttachedToWindow(v: View) {
+                                displayManager.registerDisplayListener(displayListener, null)
+                            }
+
+                            override fun onViewDetachedFromWindow(v: View) {
+                                displayManager.unregisterDisplayListener(displayListener)
+                            }
+                        }
+
+                        previewView.addOnAttachStateChangeListener(attachListener)
+                        if (previewView.isAttachedToWindow) {
+                            displayManager.registerDisplayListener(displayListener, null)
+                        }
+
                         // Seleciona a câmera frontal por padrão (melhor para o simulador)
                         val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
 
@@ -293,9 +345,16 @@ fun CameraPreviewContainer() {
                     val offsetX = (canvasWidth - rotatedWidth * scale) / 2f
                     val offsetY = (canvasHeight - rotatedHeight * scale) / 2f
 
-                    // 2. Mapeia todos os pontos normalizados para pixels da tela (com espelhamento da câmera frontal)
+                    // 2. Mapeia todos os pontos normalizados para pixels da tela (com espelhamento da câmera frontal baseado na rotação do frame)
                     val points = landmarks.map { landmark ->
-                        val correctedX = 1f - landmark.x() // Espelhamento horizontal para câmera frontal
+                        // Em modo retrato (frameRotation = 90 ou 270), o eixo horizontal do display é mapeado para o eixo vertical do sensor (não espelhado),
+                        // então precisamos espelhá-lo manualmente para corresponder ao preview da câmera frontal.
+                        // Em modo paisagem (frameRotation = 0 ou 180), o eixo horizontal do display é o próprio eixo horizontal do sensor (já espelhado).
+                        val correctedX = if (frameRotation == 90 || frameRotation == 270) {
+                            1f - landmark.x()
+                        } else {
+                            landmark.x()
+                        }
                         val screenX = correctedX * rotatedWidth * scale + offsetX
                         val screenY = landmark.y() * rotatedHeight * scale + offsetY
                         android.graphics.PointF(screenX, screenY)
@@ -447,8 +506,11 @@ fun CameraPreviewContainer() {
                     }
 
                     if (hairBitmap != null) {
-                        val pLeft = points[454]
-                        val pRight = points[234]
+                        // Em retrato (90/270), points[454] é a bochecha esquerda no lado esquerdo da tela (menor X) e points[234] é a bochecha direita no lado direito da tela (maior X).
+                        // Em paisagem (0/180), como não espelhamos, points[454] está no lado direito da tela (maior X) e points[234] está no lado esquerdo da tela (menor X).
+                        // Definimos pLeft como a bochecha esquerda da tela (menor X) e pRight como a bochecha direita da tela (maior X) para manter a rotação consistente (dx positivo).
+                        val pLeft = if (frameRotation == 90 || frameRotation == 270) points[454] else points[234]
+                        val pRight = if (frameRotation == 90 || frameRotation == 270) points[234] else points[454]
                         val dx = pRight.x - pLeft.x
                         val dy = pRight.y - pLeft.y
 
@@ -489,17 +551,24 @@ fun CameraPreviewContainer() {
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(16.dp),
-                contentAlignment = Alignment.BottomCenter
+                contentAlignment = if (isLandscape) Alignment.CenterEnd else Alignment.BottomCenter
             ) {
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .then(
+                            if (isLandscape) {
+                                Modifier.fillMaxHeight().width(320.dp)
+                            } else {
+                                Modifier.fillMaxWidth()
+                            }
+                        )
                         .background(
                             color = Color(0xD90F172A), // Dark slate semi-transparente
                             shape = RoundedCornerShape(20.dp)
                         )
                         .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = if (isLandscape) Arrangement.Center else Arrangement.Top
                 ) {
                     // Status da Detecção
                     Text(
