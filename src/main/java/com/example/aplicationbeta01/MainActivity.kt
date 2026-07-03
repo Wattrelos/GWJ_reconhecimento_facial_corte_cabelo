@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -347,13 +348,14 @@ fun CameraPreviewContainer() {
 
                     // 2. Mapeia todos os pontos normalizados para pixels da tela (com espelhamento da câmera frontal baseado na rotação do frame)
                     val points = landmarks.map { landmark ->
-                        // Em modo retrato (frameRotation = 90 ou 270), o eixo horizontal do display é mapeado para o eixo vertical do sensor (não espelhado),
-                        // então precisamos espelhá-lo manualmente para corresponder ao preview da câmera frontal.
-                        // Em modo paisagem (frameRotation = 0 ou 180), o eixo horizontal do display é o próprio eixo horizontal do sensor (já espelhado).
-                        val correctedX = if (frameRotation == 90 || frameRotation == 270) {
-                            1f - landmark.x()
-                        } else {
+                        // Para a câmera frontal, o preview exibido é sempre espelhado horizontalmente.
+                        // Como o analisador recebe os frames do sensor sem espelhamento, precisamos espelhar os pontos.
+                        // A rotação de 180 graus (quando frameRotation == 180) já inverte o eixo X naturalmente na rotação do buffer.
+                        // Para todos os outros ângulos (0, 90, 270), precisamos espelhar manualmente usando (1f - x).
+                        val correctedX = if (frameRotation == 180) {
                             landmark.x()
+                        } else {
+                            1f - landmark.x()
                         }
                         val screenX = correctedX * rotatedWidth * scale + offsetX
                         val screenY = landmark.y() * rotatedHeight * scale + offsetY
@@ -506,19 +508,14 @@ fun CameraPreviewContainer() {
                     }
 
                     if (hairBitmap != null) {
-                        // Em retrato (90/270), points[454] é a bochecha esquerda no lado esquerdo da tela (menor X) e points[234] é a bochecha direita no lado direito da tela (maior X).
-                        // Em paisagem (0/180), como não espelhamos, points[454] está no lado direito da tela (maior X) e points[234] está no lado esquerdo da tela (menor X).
-                        // Definimos pLeft como a bochecha esquerda da tela (menor X) e pRight como a bochecha direita da tela (maior X) para manter a rotação consistente (dx positivo).
-                        val pLeft = if (frameRotation == 90 || frameRotation == 270) points[454] else points[234]
-                        val pRight = if (frameRotation == 90 || frameRotation == 270) points[234] else points[454]
-                        val dx = pRight.x - pLeft.x
-                        val dy = pRight.y - pLeft.y
+                        // Calcula o ângulo de rotação da cabeça em relação à vertical da tela usando o vetor queixo -> testa (vX, vY).
+                        // Como o queixo (152) está na base e a testa (10) no topo, o vetor aponta para cima.
+                        // Um vetor apontando perfeitamente para cima na tela tem ângulo de -90 graus (já que Y cresce para baixo).
+                        // Portanto, somamos 90 graus para obter a rotação correta da cabeça na tela.
+                        val angle = Math.toDegrees(kotlin.math.atan2(vY.toDouble(), vX.toDouble())).toFloat() + 90f
 
-                        // Ângulo de inclinação lateral da cabeça
-                        val angle = Math.toDegrees(kotlin.math.atan2(dy.toDouble(), dx.toDouble())).toFloat()
-
-                        // Distância horizontal entre as bochechas
-                        val faceWidth = kotlin.math.sqrt(dx * dx + dy * dy)
+                        // Distância horizontal entre as bochechas (largura do rosto), independente de inversões/orientação
+                        val faceWidth = kotlin.math.hypot(points[234].x - points[454].x, points[234].y - points[454].y)
 
                         // Fator de escala do cabelo (customizável por estilo)
                         val hairScaleMultiplier = selectedHairStyle.hairScaleMultiplier
@@ -530,17 +527,20 @@ fun CameraPreviewContainer() {
 
                         // Aplicamos a rotação na DrawScope
                         rotate(degrees = angle, pivot = Offset(pivotPoint.x, pivotPoint.y)) {
-                            // Ajuste vertical (customizável por estilo) para que a linha do cabelo
-                            // das amostras se sobreponha de forma suave e natural sobre a testa.
-                            val verticalAdjustment = hairHeight * selectedHairStyle.verticalAdjustmentFactor
-                            val left = pivotPoint.x - (hairWidth / 2f)
-                            val top = pivotPoint.y - hairHeight + verticalAdjustment
+                            // Espelhamos a imagem horizontalmente para a câmera frontal para que ela acompanhe o preview espelhado
+                            scale(scaleX = -1f, scaleY = 1f, pivot = Offset(pivotPoint.x, pivotPoint.y)) {
+                                // Ajuste vertical (customizável por estilo) para que a linha do cabelo
+                                // das amostras se sobreponha de forma suave e natural sobre a testa.
+                                val verticalAdjustment = hairHeight * selectedHairStyle.verticalAdjustmentFactor
+                                val left = pivotPoint.x - (hairWidth / 2f)
+                                val top = pivotPoint.y - hairHeight + verticalAdjustment
 
-                            drawImage(
-                                image = hairBitmap,
-                                dstOffset = IntOffset(left.toInt(), top.toInt()),
-                                dstSize = IntSize(hairWidth.toInt(), hairHeight.toInt())
-                            )
+                                drawImage(
+                                    image = hairBitmap,
+                                    dstOffset = IntOffset(left.toInt(), top.toInt()),
+                                    dstSize = IntSize(hairWidth.toInt(), hairHeight.toInt())
+                                )
+                            }
                         }
                     }
                 }
